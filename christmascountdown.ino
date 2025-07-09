@@ -19,6 +19,7 @@
 #include <U8g2lib.h>
 #include <WiFi.h>
 #include <time.h>
+#include <math.h>
 
 // ============== CONFIGURAZIONE DISPLAY SH1106 ==============
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
@@ -39,12 +40,24 @@ unsigned long displayTimeout = 30000; // Timeout display (30 secondi)
 
 // ============== VARIABILI ANIMAZIONI ==============
 unsigned long lastAnimationTime = 0; // Timestamp ultima animazione
-unsigned long animationInterval = 15000; // Intervallo animazioni (15 secondi)
+unsigned long animationInterval = 30000; // Intervallo animazioni (30 secondi)
 int currentAnimation = 0;         // Animazione corrente
 const int totalAnimations = 4;    // Numero totale di animazioni
 bool animationActive = false;     // Flag animazione attiva
 unsigned long animationStartTime = 0; // Timestamp inizio animazione
 int animationFrame = 0;           // Frame corrente dell'animazione
+
+// ============== VARIABILI STELLE MOBILI ==============
+struct MovingStar {
+  float x;
+  float y;
+  float speed;
+  int size; // 0=piccola, 1=media, 2=grande
+  unsigned long lastUpdate;
+};
+
+MovingStar movingStars[8]; // 8 stelle mobili per non intralciare
+bool starsInitialized = false;
 
 // Configurazione WiFi per sincronizzazione orario
 const char* ssid = ""; // Inserire il nome della rete WiFi
@@ -93,6 +106,9 @@ void setup() {
     Serial.println("🔄 Interruttore NC chiuso - Modalità pulsante");
   }
   
+  // Inizializzazione stelle mobili
+  initializeMovingStars();
+  
   Serial.println("✅ Setup completato!");
 }
 
@@ -128,11 +144,19 @@ void loop() {
     }
   }
   
+  // Aggiornamento stelle mobili (anche se display è spento)
+  updateMovingStars();
+  
+  // Disegno stelle mobili solo se display è acceso (per risparmio energetico)
+  if (displayOn) {
+    drawMovingStars();
+  }
+  
   // Aggiornamento stati precedenti
   lastButtonState = currentButtonState;
   lastSwitchState = currentSwitchState;
   
-  delay(2000); // Pausa più lunga per evitare spam
+  delay(100); // Pausa ridotta per fluidità delle stelle mobili
 }
 
 // ============== GESTIONE INTERRUTTORE ==============
@@ -212,6 +236,11 @@ void turnOffDisplay() {
 
 // ============== AGGIORNAMENTO DISPLAY ==============
 void updateDisplay() {
+  // Inizializza le stelle mobili se non già fatto
+  if (!starsInitialized) {
+    initializeMovingStars();
+  }
+  
   // Calcolo giorni rimanenti per debug
   int daysToChristmas = calculateDaysToChristmas();
   
@@ -229,7 +258,7 @@ void updateDisplay() {
   // Inizia nuovo frame U8g2
   u8g2.clearBuffer();
   
-  // Decorazioni natalizie sui lati
+  // Decorazioni natalizie con stelle mobili
   drawChristmasDecorations();
   
   // Visualizzazione giorni rimanenti
@@ -367,6 +396,9 @@ void setTime(int year, int month, int day, int hour, int minute, int second) {
 
 // ============== DECORAZIONI NATALIZIE ==============
 void drawChristmasDecorations() {
+  // Disegna le stelle mobili di sfondo
+  drawMovingStars();
+  
   // Alberello di sinistra (corretto e abbassato)
   u8g2.setFont(u8g2_font_4x6_tr);
   u8g2.drawStr(2, 20, "*");     // Stella in cima
@@ -382,16 +414,19 @@ void drawChristmasDecorations() {
   u8g2.drawStr(115, 38, "/||||\\"); // Parte bassa albero
   u8g2.drawStr(118, 44, "|||");   // Tronco
   
-  // Piccole stelle decorative (meglio posizionate)
+  // Piccole stelle decorative statiche (meglio posizionate)
   u8g2.setFont(u8g2_font_4x6_tr);
   u8g2.drawStr(8, 50, ".");     // Stella piccola sinistra
-  u8g2.drawStr(110, 50, ".");   // Stella piccola destra (più a sinistra)
+  u8g2.drawStr(110, 50, ".");   // Stella piccola destra
   u8g2.drawStr(12, 58, ".");    // Stella piccola sinistra bassa
-  u8g2.drawStr(106, 58, ".");   // Stella piccola destra bassa (più a sinistra)
+  u8g2.drawStr(106, 58, ".");   // Stella piccola destra bassa
 }
 
 // ============== GESTIONE ANIMAZIONI ==============
 void startAnimation() {
+  // Animazione di transizione da countdown ad animazione
+  transitionToAnimation();
+  
   animationActive = true;
   animationStartTime = millis();
   animationFrame = 0;
@@ -402,13 +437,16 @@ void startAnimation() {
 }
 
 void handleAnimation() {
-  unsigned long animationDuration = 5000; // 5 secondi per animazione (più lunga)
+  unsigned long animationDuration = 12000; // 12 secondi per animazione (ancora più lunga)
   
   // Controlla se l'animazione è terminata
   if (millis() - animationStartTime > animationDuration) {
     animationActive = false;
     currentAnimation = (currentAnimation + 1) % totalAnimations;
     Serial.println("🎬 Animazione terminata");
+    
+    // Animazione di transizione da animazione a countdown
+    transitionToCountdown();
     return;
   }
   
@@ -418,7 +456,7 @@ void handleAnimation() {
       animationSnowfall();
       break;
     case 1:
-      animationFireworks();
+      animationSantaFace();
       break;
     case 2:
       animationStars();
@@ -471,43 +509,63 @@ void animationSnowfall() {
   u8g2.sendBuffer();
 }
 
-// ============== ANIMAZIONE 2: FUOCHI D'ARTIFICIO ==============
-void animationFireworks() {
+// ============== ANIMAZIONE 2: FACCIA DI BABBO NATALE ==============
+void animationSantaFace() {
   u8g2.clearBuffer();
   
-  int frameSpeed = (millis() - animationStartTime) / 80; // Frame ogni 80ms (molto veloce)
+  int frameSpeed = (millis() - animationStartTime) / 200; // Frame ogni 200ms
   
-  // Fuochi d'artificio che esplodono in punti diversi
-  for (int firework = 0; firework < 3; firework++) {
-    int centerX = 30 + firework * 35;
-    int centerY = 20 + (firework * 15) % 25;
-    int explosionRadius = (frameSpeed + firework * 10) % 30;
-    
-    if (explosionRadius > 5 && explosionRadius < 25) {
-      // Particelle che si espandono
-      for (int angle = 0; angle < 8; angle++) {
-        int x = centerX + (explosionRadius * cos(angle * 0.785)) / 10; // 0.785 = 45°
-        int y = centerY + (explosionRadius * sin(angle * 0.785)) / 10;
-        
-        if (x >= 0 && x < 128 && y >= 0 && y < 64) {
-          u8g2.setFont(u8g2_font_6x10_tr);
-          if (explosionRadius < 15) {
-            u8g2.drawStr(x, y, "*");
-          } else {
-            u8g2.setFont(u8g2_font_4x6_tr);
-            u8g2.drawStr(x, y, ".");
-          }
-        }
-      }
-    }
+  // Faccia di Babbo Natale grande al centro
+  u8g2.setFont(u8g2_font_10x20_tr);
+  
+  // Cappello
+  u8g2.drawStr(50, 15, "^^^^");
+  u8g2.setFont(u8g2_font_6x10_tr);
+  u8g2.drawStr(45, 20, "------");
+  
+  // Occhi che lampeggiano
+  u8g2.setFont(u8g2_font_8x13_tr);
+  if (frameSpeed % 8 < 7) {
+    u8g2.drawStr(50, 30, "O   O");  // Occhi aperti
+  } else {
+    u8g2.drawStr(50, 30, "-   -");  // Occhi chiusi (ammicca)
   }
   
-  // Stelle che cadono dai fuochi
-  for (int i = 0; i < 15; i++) {
-    int x = (i * 19 + frameSpeed * 2) % 128;
-    int y = (i * 7 + frameSpeed * 4) % 64;
+  // Naso
+  u8g2.setFont(u8g2_font_6x10_tr);
+  u8g2.drawStr(62, 35, "o");
+  
+  // Bocca che si muove
+  u8g2.setFont(u8g2_font_8x13_tr);
+  if (frameSpeed % 6 < 2) {
+    u8g2.drawStr(55, 45, "---");    // Bocca normale
+  } else if (frameSpeed % 6 < 4) {
+    u8g2.drawStr(55, 45, "OOO");    // Dice "OH"
+  } else {
+    u8g2.drawStr(55, 45, "ooo");    // Dice "oh"
+  }
+  
+  // Barba
+  u8g2.setFont(u8g2_font_6x10_tr);
+  u8g2.drawStr(45, 50, "vvvvvvv");
+  u8g2.drawStr(48, 55, "vvvvv");
+  u8g2.drawStr(51, 60, "vvv");
+  
+  // HO HO HO che appare e scompare
+  if (frameSpeed % 6 >= 2 && frameSpeed % 6 < 5) {
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(5, 25, "HO");
+    u8g2.drawStr(100, 35, "HO");
+    u8g2.drawStr(10, 50, "HO");
+  }
+  
+  // Stelline che scintillano intorno
+  if (frameSpeed % 4 < 2) {
     u8g2.setFont(u8g2_font_4x6_tr);
-    u8g2.drawStr(x, y, ".");
+    u8g2.drawStr(20, 15, "*");
+    u8g2.drawStr(100, 20, "*");
+    u8g2.drawStr(15, 40, "*");
+    u8g2.drawStr(110, 45, "*");
   }
   
   u8g2.sendBuffer();
@@ -517,14 +575,14 @@ void animationFireworks() {
 void animationStars() {
   u8g2.clearBuffer();
   
-  // Stelle cadenti diagonali molto veloci
+  // Stelle cadenti diagonali più lente
   u8g2.setFont(u8g2_font_6x10_tr);
-  int frameSpeed = (millis() - animationStartTime) / 60; // Frame ogni 60ms (molto veloce)
+  int frameSpeed = (millis() - animationStartTime) / 120; // Frame ogni 120ms (più lento)
   
-  // Stelle grandi veloci
+  // Stelle grandi più lente
   for (int i = 0; i < 8; i++) {
-    int x = (i * 40 + frameSpeed * 6) % 160 - 30;
-    int y = (i * 20 + frameSpeed * 4) % 64;
+    int x = (i * 40 + frameSpeed * 4) % 160 - 30; // Velocità ridotta da 6 a 4
+    int y = (i * 20 + frameSpeed * 3) % 64; // Velocità ridotta da 4 a 3
     
     if (x >= 0 && x < 128) {
       u8g2.drawStr(x, y, "*");
@@ -538,11 +596,11 @@ void animationStars() {
     }
   }
   
-  // Stelle piccole velocissime
+  // Stelle piccole più lente
   u8g2.setFont(u8g2_font_4x6_tr);
   for (int i = 0; i < 12; i++) {
-    int x = (i * 25 + frameSpeed * 8) % 150 - 20;
-    int y = (i * 15 + frameSpeed * 5) % 64;
+    int x = (i * 25 + frameSpeed * 5) % 150 - 20; // Velocità ridotta da 8 a 5
+    int y = (i * 15 + frameSpeed * 3) % 64; // Velocità ridotta da 5 a 3
     
     if (x >= 0 && x < 128) {
       u8g2.drawStr(x, y, "*");
@@ -612,4 +670,155 @@ void animationSanta() {
   }
   
   u8g2.sendBuffer();
+}
+
+// ============== ANIMAZIONI DI TRANSIZIONE ==============
+void transitionToAnimation() {
+  Serial.println("🔄 Transizione da countdown ad animazione");
+  
+  // Effetto di stelle che si moltiplicano e si muovono
+  for (int frame = 0; frame < 20; frame++) {
+    u8g2.clearBuffer();
+    
+    // Stelle che si espandono dal centro verso l'esterno
+    int numStars = frame + 5;
+    for (int i = 0; i < numStars && i < 30; i++) {
+      int x = 64 + (i * 7 + frame * 3) % 120 - 60;
+      int y = 32 + (i * 5 + frame * 2) % 60 - 30;
+      
+      // Mantieni le coordinate nei limiti
+      if (x < 0) x = 128 + x;
+      if (y < 0) y = 64 + y;
+      if (x >= 128) x = x - 128;
+      if (y >= 64) y = y - 64;
+      
+      u8g2.setFont(u8g2_font_4x6_tr);
+      u8g2.drawStr(x, y, "*");
+    }
+    
+    // Puntini che si muovono in spirale
+    for (int i = 0; i < 15; i++) {
+      int radius = (frame + i) * 2;
+      int x = 64 + (radius % 50) - 25;
+      int y = 32 + ((radius + i * 3) % 40) - 20;
+      
+      if (x >= 0 && x < 128 && y >= 0 && y < 64) {
+        u8g2.drawPixel(x, y);
+      }
+    }
+    
+    u8g2.sendBuffer();
+    delay(60);
+  }
+}
+
+void transitionToCountdown() {
+  Serial.println("🔄 Transizione da animazione a countdown");
+  
+  // Effetto di stelle che si raccolgono al centro
+  for (int frame = 20; frame >= 0; frame--) {
+    u8g2.clearBuffer();
+    
+    // Stelle che si muovono verso il centro
+    int numStars = frame + 5;
+    for (int i = 0; i < numStars && i < 30; i++) {
+      int x = 64 + (i * 7 + frame * 3) % 120 - 60;
+      int y = 32 + (i * 5 + frame * 2) % 60 - 30;
+      
+      // Mantieni le coordinate nei limiti
+      if (x < 0) x = 128 + x;
+      if (y < 0) y = 64 + y;
+      if (x >= 128) x = x - 128;
+      if (y >= 64) y = y - 64;
+      
+      u8g2.setFont(u8g2_font_4x6_tr);
+      u8g2.drawStr(x, y, "*");
+    }
+    
+    u8g2.sendBuffer();
+    delay(60);
+  }
+  
+  delay(200); // Pausa finale per stabilizzare
+}
+
+// ============== FUNZIONI STELLE MOBILI ==============
+void initializeMovingStars() {
+  for (int i = 0; i < 8; i++) {
+    // Posiziona le stelle solo nelle zone laterali per non intralciare il testo
+    if (i < 4) {
+      movingStars[i].x = random(5, 25); // Lato sinistro
+    } else {
+      movingStars[i].x = random(103, 123); // Lato destro
+    }
+    
+    movingStars[i].y = random(0, 64);
+    movingStars[i].speed = random(30, 100) / 100.0; // Velocità tra 0.3 e 1.0 pixel/secondo
+    movingStars[i].size = random(0, 3); // 0=piccola, 1=media, 2=grande
+    movingStars[i].lastUpdate = millis();
+  }
+  starsInitialized = true;
+}
+
+void updateMovingStars() {
+  unsigned long currentTime = millis();
+  
+  for (int i = 0; i < 8; i++) {
+    // Calcola il tempo trascorso dall'ultimo aggiornamento
+    unsigned long deltaTime = currentTime - movingStars[i].lastUpdate;
+    
+    // Aggiorna posizione ogni 100ms per movimento fluido
+    if (deltaTime >= 100) {
+      // Movimento verso il basso con leggera oscillazione orizzontale
+      movingStars[i].x += random(-1, 2) * 0.3; // Oscillazione molto leggera
+      movingStars[i].y += movingStars[i].speed;
+      
+      // Mantieni la stella nelle zone laterali
+      if (i < 4) {
+        // Lato sinistro
+        if (movingStars[i].x < 5) movingStars[i].x = 5;
+        if (movingStars[i].x > 25) movingStars[i].x = 25;
+      } else {
+        // Lato destro
+        if (movingStars[i].x < 103) movingStars[i].x = 103;
+        if (movingStars[i].x > 123) movingStars[i].x = 123;
+      }
+      
+      // Se la stella esce dal basso, riposizionala in alto
+      if (movingStars[i].y > 64) {
+        movingStars[i].y = -5;
+        movingStars[i].speed = random(30, 100) / 100.0;
+        movingStars[i].size = random(0, 3);
+      }
+      
+      movingStars[i].lastUpdate = currentTime;
+    }
+  }
+}
+
+void drawMovingStars() {
+  updateMovingStars();
+  
+  for (int i = 0; i < 8; i++) {
+    int x = (int)movingStars[i].x;
+    int y = (int)movingStars[i].y;
+    
+    // Disegna stelle di diverse dimensioni
+    switch (movingStars[i].size) {
+      case 0: // Stella piccola (1 pixel)
+        u8g2.drawPixel(x, y);
+        break;
+      case 1: // Stella media (croce 3x3)
+        u8g2.drawPixel(x, y);
+        u8g2.drawPixel(x-1, y);
+        u8g2.drawPixel(x+1, y);
+        u8g2.drawPixel(x, y-1);
+        u8g2.drawPixel(x, y+1);
+        break;
+      case 2: // Stella grande (asterisco)
+        u8g2.setFont(u8g2_font_4x6_tr);
+        u8g2.drawStr(x-1, y, "*");
+        break;
+    }
+  }
 }
