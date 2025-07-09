@@ -401,14 +401,14 @@ void drawChristmasDecorations() {
   
   // Alberello di sinistra (corretto e abbassato)
   u8g2.setFont(u8g2_font_4x6_tr);
-  u8g2.drawStr(2, 20, "*");     // Stella in cima
-  u8g2.drawStr(1, 26, "/|\\");   // Parte alta albero
+  u8g2.drawStr(6, 20, "*");     // Stella in cima (spostata a destra)
+  u8g2.drawStr(2, 26, "/|\\");   // Parte alta albero
   u8g2.drawStr(0, 32, "/|||\\");  // Parte media albero
   u8g2.drawStr(0, 38, "/||||\\"); // Parte bassa albero
   u8g2.drawStr(3, 44, "|||");    // Tronco
   
   // Alberello di destra (spostato più a sinistra)
-  u8g2.drawStr(118, 20, "*");    // Stella in cima
+  u8g2.drawStr(121, 20, "*");    // Stella in cima (spostata a sinistra)
   u8g2.drawStr(117, 26, "/|\\");  // Parte alta albero
   u8g2.drawStr(116, 32, "/|||\\"); // Parte media albero
   u8g2.drawStr(115, 38, "/||||\\"); // Parte bassa albero
