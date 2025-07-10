@@ -6,10 +6,27 @@
  * 
  * Componenti utilizzati:
  * - ESP32 DevKit v1
- * - Display OLED I2C 0.96" (128x64)
+ * - Display OLED I2C 0.96" (128x64) - SH1106
+ * - Modulo RTC DS3231 (I2C)
  * - Pulsante momentaneo
  * - Interruttore a slitta
  * - Portabatterie 3xAA (4.5V)
+ * 
+ * Connessioni I2C:
+ * - SDA: GPIO 21 (ESP32)
+ * - SCL: GPIO 22 (ESP32)
+ * - Display SH1106: Indirizzo I2C 0x3C
+ * - RTC DS3231: Indirizzo I2C 0x68
+ * - EEPROM AT24C32: Indirizzo I2C 0x57 (integrato nel modulo DS3231)
+ * 
+ * Funzionalità DS3231:
+ * - Orologio in tempo reale con compensazione temperatura (±2ppm)
+ * - Batteria backup CR2032 (8-10 anni di durata)
+ * - 2 allarmi programmabili giornalieri
+ * - Sensore temperatura integrato (±3°C)
+ * - Uscita onda quadra 32kHz programmabile
+ * - Correzione automatica anni bisestili
+ * - Regolazione automatica fine mese
  * 
  * Autore: [Il tuo nome]
  * Data: Luglio 2025
@@ -20,10 +37,20 @@
 #include <WiFi.h>
 #include <time.h>
 #include <math.h>
+#include <RTClib.h>  // Libreria per DS3231
+#include <EEPROM.h> // Libreria per gestione EEPROM
+
+// ============== COSTANTI EEPROM ==============
+#define EEPROM_ANIMATION_INTERVAL 0x00  // Indirizzo per intervallo animazioni
+#define EEPROM_DISPLAY_TIMEOUT 0x01     // Indirizzo per timeout display
 
 // ============== CONFIGURAZIONE DISPLAY SH1106 ==============
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 bool displayAvailable = false; // Flag per verificare se display è disponibile
+
+// ============== CONFIGURAZIONE RTC DS3231 ==============
+RTC_DS3231 rtc;
+bool rtcAvailable = false; // Flag per verificare se RTC è disponibile
 
 // ============== CONFIGURAZIONE PIN ==============
 #define BUTTON_PIN 25        // Pin per il pulsante momentaneo
@@ -37,6 +64,8 @@ bool lastSwitchState = HIGH;      // Ultimo stato dell'interruttore (NC = HIGH q
 bool switchMode = true;           // Modalità interruttore attiva (default ON per NC)
 unsigned long buttonPressTime = 0; // Timestamp pressione pulsante
 unsigned long displayTimeout = 30000; // Timeout display (30 secondi)
+
+
 
 // ============== VARIABILI ANIMAZIONI ==============
 unsigned long lastAnimationTime = 0; // Timestamp ultima animazione
@@ -60,13 +89,16 @@ MovingStar movingStars[8]; // 8 stelle mobili per non intralciare
 bool starsInitialized = false;
 
 // Configurazione WiFi per sincronizzazione orario
-const char* ssid = ""; // Inserire il nome della rete WiFi
-const char* password = ""; // Inserire la password WiFi
+const char* ssid = "TuaReteWiFi"; // Inserire il nome della rete WiFi 
+const char* password = "TuaPassword"; // Inserire la password WiFi
 
 // ============== SETUP ==============
 void setup() {
   Serial.begin(115200);
   Serial.println("🎄 Christmas Countdown - Avvio...");
+  
+  // Carica configurazioni salvate
+  loadConfiguration();
   
   // Inizializzazione pin
   pinMode(BUTTON_PIN, INPUT_PULLUP);
@@ -78,6 +110,65 @@ void setup() {
   u8g2.begin();
   displayAvailable = true;
   Serial.println("✅ Display SH1106 inizializzato correttamente!");
+  
+  // Inizializzazione RTC DS3231
+  Serial.println("🔍 Tentativo inizializzazione RTC DS3231...");
+  if (rtc.begin()) {
+    rtcAvailable = true;
+    Serial.println("✅ RTC DS3231 inizializzato correttamente!");
+    
+    // Controlla se il RTC ha perso l'alimentazione o se è il primo avvio
+    if (rtc.lostPower()) {
+      Serial.println("⚠️ RTC ha perso l'alimentazione - Impostazione orario corrente");
+      setRTCFromCompileTime();
+    } else {
+      // Controlla se l'orario del RTC è ragionevole (non troppo vecchio o futuro)
+      DateTime now = rtc.now();
+      DateTime compileTime = getCompileDateTime();
+      
+      // Se la differenza è maggiore di 1 settimana, aggiorna con l'orario di compilazione
+      TimeSpan diff = now - compileTime;
+      int32_t daysDiff = diff.days();
+      if ((daysDiff > 7) || (daysDiff < -7)) {
+        Serial.println("⚠️ Orario RTC non aggiornato - Impostazione orario di compilazione");
+        setRTCFromCompileTime();
+      } else {
+        Serial.println("✅ Orario RTC già aggiornato");
+      }
+    }
+    
+    // Mostra orario corrente del RTC
+    DateTime now = rtc.now();
+    Serial.print("📅 Data RTC: ");
+    Serial.print(now.day());
+    Serial.print("/");
+    Serial.print(now.month());
+    Serial.print("/");
+    Serial.print(now.year());
+    Serial.print(" ");
+    Serial.print(now.hour());
+    Serial.print(":");
+    Serial.print(now.minute());
+    Serial.print(":");
+    Serial.println(now.second());
+    
+    // Opzione per impostare manualmente l'orario
+    Serial.println("💡 Per impostare manualmente l'orario RTC:");
+    Serial.println("   Invia: SET_TIME,YYYY,MM,DD,HH,MM,SS");
+    Serial.println("   Esempio: SET_TIME,2025,7,10,14,30,0");
+    
+    // Controllo automatico stato batteria
+    checkRTCBatteryStatus();
+    
+    // Configurazione avanzata DS3231
+    configureDS3231Advanced();
+    
+    // Imposta allarme per Natale
+    setChristmasAlarm();
+  } else {
+    rtcAvailable = false;
+    Serial.println("❌ RTC DS3231 non trovato - Usando orario interno");
+  }
   
   // Configurazione iniziale display
   u8g2.clearBuffer();
@@ -109,11 +200,31 @@ void setup() {
   // Inizializzazione stelle mobili
   initializeMovingStars();
   
+  // Configurazione avanzata DS3231
+  configureDS3231Advanced();
+  
+  // Carica configurazioni salvate
+  loadConfiguration();
+  
   Serial.println("✅ Setup completato!");
 }
 
 // ============== LOOP PRINCIPALE ==============
 void loop() {
+  // Controllo comandi seriali per impostazione orario
+  if (Serial.available()) {
+    String command = Serial.readString();
+    command.trim();
+    handleSerialCommand(command);
+  }
+  
+  // Controllo allarme Natale
+  if (checkChristmasAlarm()) {
+    // Forza visualizzazione messaggio Natale
+    turnOnDisplay();
+    animationActive = false; // Interrompi eventuali animazioni
+  }
+  
   // Lettura stati pulsante e interruttore
   bool currentButtonState = digitalRead(BUTTON_PIN);
   bool currentSwitchState = digitalRead(SWITCH_PIN);
@@ -151,6 +262,9 @@ void loop() {
   if (displayOn) {
     drawMovingStars();
   }
+  
+  // Controllo allarme di Natale
+  checkChristmasAlarm();
   
   // Aggiornamento stati precedenti
   lastButtonState = currentButtonState;
@@ -317,69 +431,296 @@ void updateDisplay() {
 
 // ============== CALCOLO GIORNI A NATALE ==============
 int calculateDaysToChristmas() {
-  time_t now;
-  struct tm timeinfo;
-  time(&now);
-  localtime_r(&now, &timeinfo);
+  DateTime now;
+  
+  // Usa il RTC DS3231 se disponibile, altrimenti usa l'orario di sistema
+  if (rtcAvailable) {
+    now = rtc.now();
+    Serial.print("📅 RTC: ");
+    Serial.print(now.day());
+    Serial.print("/");
+    Serial.print(now.month());
+    Serial.print("/");
+    Serial.print(now.year());
+    Serial.print(" ");
+    Serial.print(now.hour());
+    Serial.print(":");
+    Serial.print(now.minute());
+    Serial.print(":");
+    Serial.println(now.second());
+  } else {
+    // Fallback all'orario di sistema
+    time_t nowTime;
+    struct tm timeinfo;
+    time(&nowTime);
+    localtime_r(&nowTime, &timeinfo);
+    
+    now = DateTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                   timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    Serial.println("📅 Usando orario di sistema (RTC non disponibile)");
+  }
   
   // Data di Natale dell'anno corrente
-  struct tm christmas = timeinfo;
-  christmas.tm_mon = 11;  // Dicembre (0-based)
-  christmas.tm_mday = 25; // 25 dicembre
-  christmas.tm_hour = 0;
-  christmas.tm_min = 0;
-  christmas.tm_sec = 0;
-  
-  time_t christmasTime = mktime(&christmas);
+  DateTime christmas(now.year(), 12, 25);
   
   // Se Natale è già passato, calcola per l'anno prossimo
-  if (christmasTime < now) {
-    christmas.tm_year++;
-    christmasTime = mktime(&christmas);
+  if (now > christmas) {
+    christmas = DateTime(now.year() + 1, 12, 25);
   }
   
   // Calcolo differenza in giorni
-  double diff = difftime(christmasTime, now);
-  return (int)(diff / (24 * 60 * 60));
+  TimeSpan diff = christmas - now;
+  return diff.days();
 }
 
-// ============== CONFIGURAZIONE WIFI E ORARIO ==============
+// ============== CONFIGURAZIONE WIFI E SINCRONIZZAZIONE ORARIO ==============
 void setupWiFiTime() {
-  // Se le credenziali WiFi sono vuote, usa l'orario interno
-  if (strlen(ssid) == 0) {
-    Serial.println("⚠️ WiFi non configurato - Usando orario interno");
-    // Impostazione manuale per test (modificare se necessario)
-    // Formato: anno, mese (1-12), giorno, ora, minuto, secondo
-    setTime(2025, 7, 9, 12, 0, 0); // 9 luglio 2025, 12:00
-    return;
-  }
-  
-  Serial.println("📡 Connessione WiFi...");
-  WiFi.begin(ssid, password);
-  
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n✅ WiFi connesso!");
-    configTime(3600, 3600, "pool.ntp.org"); // Fuso orario italiano
+  // Se il RTC è disponibile, prova a sincronizzare l'orario via WiFi
+  if (rtcAvailable) {
+    Serial.println("🔄 RTC DS3231 disponibile - Tentativo sincronizzazione WiFi opzionale");
     
-    // Attesa sincronizzazione
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
-      Serial.println("✅ Orario sincronizzato!");
+    // Se le credenziali WiFi sono vuote, usa solo il RTC
+    if (strlen(ssid) == 0) {
+      Serial.println("⚠️ WiFi non configurato - Usando solo RTC DS3231");
+      return;
+    }
+    
+    Serial.println("📡 Connessione WiFi per sincronizzazione...");
+    WiFi.begin(ssid, password);
+    
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+      delay(500);
+      Serial.print(".");
+      attempts++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\n✅ WiFi connesso! Sincronizzazione RTC...");
+      
+      // Configura NTP
+      configTime(3600, 3600, "pool.ntp.org"); // Fuso orario italiano
+      
+      // Attendi sincronizzazione NTP
+      struct tm timeinfo;
+      int ntpAttempts = 0;
+      while (!getLocalTime(&timeinfo) && ntpAttempts < 10) {
+        delay(1000);
+        ntpAttempts++;
+        Serial.print(".");
+      }
+      
+      if (getLocalTime(&timeinfo)) {
+        // Sincronizza il RTC con l'orario NTP
+        DateTime ntpTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                        timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        rtc.adjust(ntpTime);
+        Serial.println("\n✅ RTC sincronizzato con NTP!");
+        
+        Serial.print("📅 Nuovo orario RTC: ");
+        DateTime now = rtc.now();
+        Serial.print(now.day());
+        Serial.print("/");
+        Serial.print(now.month());
+        Serial.print("/");
+        Serial.print(now.year());
+        Serial.print(" ");
+        Serial.print(now.hour());
+        Serial.print(":");
+        Serial.print(now.minute());
+        Serial.print(":");
+        Serial.println(now.second());
+      } else {
+        Serial.println("\n❌ Sincronizzazione NTP fallita - Mantengo orario RTC");
+      }
+      
+      // Disconnetti WiFi per risparmiare energia
+      WiFi.disconnect();
+      WiFi.mode(WIFI_OFF);
+      Serial.println("📡 WiFi disconnesso per risparmio energia");
+    } else {
+      Serial.println("\n❌ Connessione WiFi fallita - Usando orario RTC");
     }
   } else {
-    Serial.println("\n❌ Connessione WiFi fallita - Usando orario interno");
-    setTime(2025, 7, 9, 12, 0, 0); // Fallback
+    // Se il RTC non è disponibile, usa il sistema precedente
+    Serial.println("⚠️ RTC non disponibile - Usando orario di sistema");
+    
+    if (strlen(ssid) == 0) {
+      Serial.println("⚠️ WiFi non configurato - Usando orario interno");
+      setTime(2025, 7, 10, 12, 0, 0); // 10 luglio 2025, 12:00
+      return;
+    }
+    
+    Serial.println("📡 Connessione WiFi...");
+    WiFi.begin(ssid, password);
+    
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+      delay(500);
+      Serial.print(".");
+      attempts++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\n✅ WiFi connesso!");
+      configTime(3600, 3600, "pool.ntp.org"); // Fuso orario italiano
+      
+      struct tm timeinfo;
+      if (getLocalTime(&timeinfo)) {
+        Serial.println("✅ Orario sincronizzato!");
+      }
+    } else {
+      Serial.println("\n❌ Connessione WiFi fallita - Usando orario interno");
+      setTime(2025, 7, 10, 12, 0, 0); // 10 luglio 2025, 12:00
+    }
   }
 }
 
-// ============== FUNZIONE AUSILIARIA PER IMPOSTARE ORARIO ==============
+// ============== GESTIONE COMANDI SERIALI ==============
+void handleSerialCommand(String command) {
+  // Comando per impostare orario: SET_TIME,YYYY,MM,DD,HH,MM,SS
+  if (command.startsWith("SET_TIME,")) {
+    command.remove(0, 9); // Rimuovi "SET_TIME,"
+    
+    // Parsing dei parametri
+    int year = command.substring(0, command.indexOf(',')).toInt();
+    command.remove(0, command.indexOf(',') + 1);
+    
+    int month = command.substring(0, command.indexOf(',')).toInt();
+    command.remove(0, command.indexOf(',') + 1);
+    
+    int day = command.substring(0, command.indexOf(',')).toInt();
+    command.remove(0, command.indexOf(',') + 1);
+    
+    int hour = command.substring(0, command.indexOf(',')).toInt();
+    command.remove(0, command.indexOf(',') + 1);
+    
+    int minute = command.substring(0, command.indexOf(',')).toInt();
+    command.remove(0, command.indexOf(',') + 1);
+    
+    int second = command.toInt();
+    
+    // Validazione parametri
+    if (year >= 2025 && month >= 1 && month <= 12 && day >= 1 && day <= 31 &&
+        hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59) {
+      setRTCTime(year, month, day, hour, minute, second);
+    } else {
+      Serial.println("❌ Parametri non validi. Formato: SET_TIME,YYYY,MM,DD,HH,MM,SS");
+    }
+  }
+  // Comando per mostrare orario corrente
+  else if (command.equals("SHOW_TIME")) {
+    if (rtcAvailable) {
+      DateTime now = rtc.now();
+      Serial.print("📅 Orario RTC corrente: ");
+      Serial.print(now.day());
+      Serial.print("/");
+      Serial.print(now.month());
+      Serial.print("/");
+      Serial.print(now.year());
+      Serial.print(" ");
+      Serial.print(now.hour());
+      Serial.print(":");
+      Serial.print(now.minute());
+      Serial.print(":");
+      Serial.println(now.second());
+      
+      int days = calculateDaysToChristmas();
+      Serial.print("🎄 Giorni a Natale: ");
+      Serial.println(days);
+    } else {
+      Serial.println("❌ RTC non disponibile");
+    }
+  }
+  // Comando per help
+  else if (command.equals("HELP")) {
+    Serial.println("🎄 COMANDI DISPONIBILI:");
+    Serial.println("   SET_TIME,YYYY,MM,DD,HH,MM,SS - Imposta orario RTC");
+    Serial.println("   SHOW_TIME - Mostra orario corrente");
+    Serial.println("   CHECK_BATTERY - Verifica stato batteria RTC");
+    Serial.println("   SAVE_CONFIG - Salva configurazione in EEPROM");
+    Serial.println("   LOAD_CONFIG - Carica configurazione da EEPROM");
+    Serial.println("   SYNC_NTP - Forza sincronizzazione con NTP");
+    Serial.println("   NOW - Mostra orario compilazione e RTC");
+    Serial.println("   HELP - Mostra questo messaggio");
+  }
+  // Comando per verificare batteria
+  else if (command.equals("CHECK_BATTERY")) {
+    checkRTCBatteryStatus();
+  }
+  // Comando per salvare configurazione
+  else if (command.equals("SAVE_CONFIG")) {
+    saveConfiguration();
+  }
+  // Comando per caricare configurazione
+  else if (command.equals("LOAD_CONFIG")) {
+    loadConfiguration();
+  }
+  // Comando per sincronizzare con NTP
+  else if (command.equals("SYNC_NTP")) {
+    Serial.println("🔄 Forzando sincronizzazione NTP...");
+    syncWithNTP();
+  }
+  // Comando per ottenere orario attuale
+  else if (command.equals("NOW")) {
+    Serial.print("⏰ Orario di compilazione: ");
+    DateTime compileTime = getCompileDateTime();
+    Serial.print(compileTime.day());
+    Serial.print("/");
+    Serial.print(compileTime.month());
+    Serial.print("/");
+    Serial.print(compileTime.year());
+    Serial.print(" ");
+    Serial.print(compileTime.hour());
+    Serial.print(":");
+    Serial.print(compileTime.minute());
+    Serial.print(":");
+    Serial.println(compileTime.second());
+    
+    if (rtcAvailable) {
+      DateTime now = rtc.now();
+      Serial.print("⏰ Orario RTC: ");
+      Serial.print(now.day());
+      Serial.print("/");
+      Serial.print(now.month());
+      Serial.print("/");
+      Serial.print(now.year());
+      Serial.print(" ");
+      Serial.print(now.hour());
+      Serial.print(":");
+      Serial.print(now.minute());
+      Serial.print(":");
+      Serial.println(now.second());
+    }
+  }
+  else {
+    Serial.println("❌ Comando non riconosciuto. Scrivi HELP per la lista comandi.");
+  }
+}
+
+// ============== FUNZIONE PER IMPOSTARE ORARIO RTC MANUALMENTE ==============
+void setRTCTime(int year, int month, int day, int hour, int minute, int second) {
+  if (rtcAvailable) {
+    DateTime newTime(year, month, day, hour, minute, second);
+    rtc.adjust(newTime);
+    Serial.print("✅ Orario RTC impostato: ");
+    Serial.print(day);
+    Serial.print("/");
+    Serial.print(month);
+    Serial.print("/");
+    Serial.print(year);
+    Serial.print(" ");
+    Serial.print(hour);
+    Serial.print(":");
+    Serial.print(minute);
+    Serial.print(":");
+    Serial.println(second);
+  } else {
+    Serial.println("❌ RTC non disponibile - Impossibile impostare orario");
+  }
+}
+
+// ============== FUNZIONE AUSILIARIA PER IMPOSTARE ORARIO (FALLBACK) ==============
 void setTime(int year, int month, int day, int hour, int minute, int second) {
   struct tm timeinfo;
   timeinfo.tm_year = year - 1900;
@@ -820,5 +1161,307 @@ void drawMovingStars() {
         u8g2.drawStr(x-1, y, "*");
         break;
     }
+  }
+}
+
+// ============== CONFIGURAZIONE AVANZATA DS3231 ==============
+void configureDS3231Advanced() {
+  if (!rtcAvailable) return;
+  
+  Serial.println("🔧 Configurazione avanzata DS3231...");
+  
+  // Disabilita uscita 32kHz per risparmiare energia (se non usata)
+  rtc.disable32K();
+  Serial.println("   32kHz output disabilitato per risparmio energia");
+  
+  // Configura l'uscita SQW per fornire 1Hz (utile per debug)
+  rtc.writeSqwPinMode(DS3231_SquareWave1Hz);
+  Serial.println("   SQW output configurato a 1Hz");
+  
+  // Cancella eventuali allarmi esistenti
+  rtc.clearAlarm(1);
+  rtc.clearAlarm(2);
+  rtc.disableAlarm(1);
+  rtc.disableAlarm(2);
+  Serial.println("   Allarmi cancellati e disabilitati");
+  
+  Serial.println("✅ Configurazione avanzata DS3231 completata");
+}
+
+// ============== GESTIONE ALLARMI DS3231 ==============
+void setChristmasAlarm() {
+  if (!rtcAvailable) return;
+  
+  DateTime now = rtc.now();
+  DateTime christmas(now.year(), 12, 25, 0, 0, 0);
+  
+  // Se Natale è già passato, imposta per l'anno prossimo
+  if (now > christmas) {
+    christmas = DateTime(now.year() + 1, 12, 25, 0, 0, 0);
+  }
+  
+  // Imposta allarme per la mezzanotte di Natale usando l'API corretta
+  // setAlarm1(date, hour, minute, second, mode)
+  rtc.setAlarm1(christmas, DS3231_A1_Date);
+  
+  Serial.print("🔔 Allarme Natale impostato per: ");
+  Serial.print(christmas.day());
+  Serial.print("/");
+  Serial.print(christmas.month());
+  Serial.print("/");
+  Serial.println(christmas.year());
+}
+
+// ============== CONTROLLO ALLARMI ==============
+bool checkChristmasAlarm() {
+  if (!rtcAvailable) return false;
+  
+  if (rtc.alarmFired(1)) {
+    rtc.clearAlarm(1);
+    Serial.println("🎄🔔 ALLARME NATALE ATTIVATO! È NATALE! 🎄🔔");
+    return true;
+  }
+  return false;
+}
+
+// ============== VERIFICA STATO BATTERIA RTC ==============
+void checkRTCBatteryStatus() {
+  if (rtcAvailable) {
+    // Leggi il registro di stato del DS3231
+    Wire.beginTransmission(0x68); // Indirizzo DS3231
+    Wire.write(0x0F); // Registro Status
+    Wire.endTransmission();
+    
+    Wire.requestFrom(0x68, 1);
+    if (Wire.available()) {
+      uint8_t status = Wire.read();
+      
+      // Bit 7: Oscillator Stop Flag (OSF)
+      if (status & 0x80) {
+        Serial.println("⚠️ ATTENZIONE: RTC ha perso l'alimentazione - Verificare batteria!");
+      } else {
+        Serial.println("✅ RTC: Batteria OK, nessuna perdita di alimentazione");
+      }
+      
+      // Bit 2: 32kHz Enable
+      if (status & 0x08) {
+        Serial.println("📶 RTC: Uscita 32kHz attiva");
+      }
+      
+      // Mostra temperatura del DS3231 (indicatore di funzionamento)
+      float temp = rtc.getTemperature();
+      Serial.print("🌡️ Temperatura DS3231: ");
+      Serial.print(temp);
+      Serial.println(" °C");
+    }
+  } else {
+    Serial.println("❌ RTC non disponibile - Impossibile verificare batteria");
+  }
+}
+
+// ============== GESTIONE EEPROM AT24C32 ==============
+void saveConfiguration() {
+  if (!rtcAvailable) return;
+  
+  // Salva configurazioni nell'EEPROM del modulo
+  Serial.println("💾 Salvataggio configurazioni...");
+  
+  // Nota: Il modulo ha un AT24C32 separato all'indirizzo 0x57
+  // Per semplicità, usiamo l'EEPROM interno dell'ESP32
+  EEPROM.begin(512);
+  
+  // Salva intervallo animazioni (in secondi / 1000)
+  EEPROM.write(EEPROM_ANIMATION_INTERVAL, animationInterval / 1000);
+  
+  // Salva timeout display (in secondi / 1000) 
+  EEPROM.put(EEPROM_DISPLAY_TIMEOUT, displayTimeout / 1000);
+  
+  EEPROM.commit();
+  Serial.println("✅ Configurazioni salvate");
+}
+
+void loadConfiguration() {
+  EEPROM.begin(512);
+  
+  // Carica configurazioni
+  uint8_t animInterval = EEPROM.read(EEPROM_ANIMATION_INTERVAL);
+  if (animInterval != 0xFF && animInterval > 0) {
+    animationInterval = animInterval * 1000;
+    Serial.print("📖 Intervallo animazioni caricato: ");
+    Serial.print(animationInterval / 1000);
+    Serial.println(" secondi");
+  }
+  
+  uint32_t dispTimeout;
+  EEPROM.get(EEPROM_DISPLAY_TIMEOUT, dispTimeout);
+  if (dispTimeout != 0xFFFFFFFF && dispTimeout > 0 && dispTimeout < 300) {
+    displayTimeout = dispTimeout * 1000;
+    Serial.print("📖 Timeout display caricato: ");
+    Serial.print(displayTimeout / 1000);
+    Serial.println(" secondi");
+  }
+}
+
+// ============== FUNZIONI HELPER PER RTC E DATA/ORA DI COMPILAZIONE ==============
+
+// Funzione per ottenere la data/ora di compilazione
+DateTime getCompileDateTime() {
+  // Macro predefinite del compilatore per data e ora di compilazione
+  // __DATE__ formato: "Jul 10 2025"
+  // __TIME__ formato: "12:00:00"
+  
+  const char* date = __DATE__;
+  const char* time = __TIME__;
+  
+  // Array dei nomi dei mesi
+  const char monthNames[12][4] = {
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+  };
+  
+  // Parsing della data
+  char monthStr[4];
+  int day, year;
+  sscanf(date, "%3s %d %d", monthStr, &day, &year);
+  
+  // Trova il numero del mese
+  int month = 1;
+  for (int i = 0; i < 12; i++) {
+    if (strncmp(monthStr, monthNames[i], 3) == 0) {
+      month = i + 1;
+      break;
+    }
+  }
+  
+  // Parsing dell'ora
+  int hour, minute, second;
+  sscanf(time, "%d:%d:%d", &hour, &minute, &second);
+  
+  // Crea oggetto DateTime
+  return DateTime(year, month, day, hour, minute, second);
+}
+
+// Funzione per impostare l'RTC con la data/ora di compilazione
+void setRTCFromCompileTime() {
+  if (!rtcAvailable) {
+    Serial.println("❌ RTC non disponibile - Impossibile impostare orario");
+    return;
+  }
+  
+  DateTime compileTime = getCompileDateTime();
+  
+  Serial.print("⏰ Impostazione RTC con orario di compilazione: ");
+  Serial.print(compileTime.day());
+  Serial.print("/");
+  Serial.print(compileTime.month());
+  Serial.print("/");
+  Serial.print(compileTime.year());
+  Serial.print(" ");
+  Serial.print(compileTime.hour());
+  Serial.print(":");
+  if (compileTime.minute() < 10) Serial.print("0");
+  Serial.print(compileTime.minute());
+  Serial.print(":");
+  if (compileTime.second() < 10) Serial.print("0");
+  Serial.println(compileTime.second());
+  
+  // Imposta l'orario nel RTC
+  rtc.adjust(compileTime);
+  
+  // Verifica che l'impostazione sia andata a buon fine
+  delay(100);
+  DateTime now = rtc.now();
+  
+  // Calcola la differenza assoluta tra i timestamp
+  uint32_t nowTime = now.unixtime();
+  uint32_t compileTimeUnix = compileTime.unixtime();
+  uint32_t timeDiff = (nowTime > compileTimeUnix) ? (nowTime - compileTimeUnix) : (compileTimeUnix - nowTime);
+  
+  if (timeDiff < 2) {
+    Serial.println("✅ RTC impostato correttamente con orario di compilazione");
+  } else {
+    Serial.println("⚠️ Possibile errore nell'impostazione del RTC");
+  }
+}
+
+// ============== FUNZIONE PER SINCRONIZZAZIONE NTP FORZATA ==============
+void syncWithNTP() {
+  if (!rtcAvailable) {
+    Serial.println("❌ RTC non disponibile per sincronizzazione");
+    return;
+  }
+  
+  // Se le credenziali WiFi sono vuote, chiedi all'utente
+  if (strlen(ssid) == 0 || strcmp(ssid, "TuaReteWiFi") == 0) {
+    Serial.println("⚠️ WiFi non configurato!");
+    Serial.println("💡 Modifica le credenziali WiFi nel codice:");
+    Serial.println("   const char* ssid = \"NomeDellatuaRete\";");
+    Serial.println("   const char* password = \"PasswordDellatuaRete\";");
+    Serial.println("💡 Oppure usa: SET_TIME,2025,7,10,18,5,0");
+    return;
+  }
+  
+  Serial.println("📡 Connessione WiFi per sincronizzazione NTP...");
+  WiFi.begin(ssid, password);
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✅ WiFi connesso! Sincronizzazione con NTP...");
+    
+    // Configura NTP per fuso orario italiano (UTC+1, DST +1)
+    configTime(3600, 3600, "pool.ntp.org", "time.google.com");
+    
+    // Attendi sincronizzazione NTP
+    struct tm timeinfo;
+    int ntpAttempts = 0;
+    while (!getLocalTime(&timeinfo) && ntpAttempts < 15) {
+      delay(1000);
+      ntpAttempts++;
+      Serial.print(".");
+    }
+    
+    if (getLocalTime(&timeinfo)) {
+      // Sincronizza il RTC con l'orario NTP
+      DateTime ntpTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                      timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+      rtc.adjust(ntpTime);
+      Serial.println("\n✅ RTC sincronizzato con NTP!");
+      
+      Serial.print("📅 Nuovo orario RTC: ");
+      DateTime now = rtc.now();
+      Serial.print(now.day());
+      Serial.print("/");
+      Serial.print(now.month());
+      Serial.print("/");
+      Serial.print(now.year());
+      Serial.print(" ");
+      Serial.print(now.hour());
+      Serial.print(":");
+      if (now.minute() < 10) Serial.print("0");
+      Serial.print(now.minute());
+      Serial.print(":");
+      if (now.second() < 10) Serial.print("0");
+      Serial.println(now.second());
+      
+      // Mostra countdown aggiornato
+      int days = calculateDaysToChristmas();
+      Serial.print("🎄 Giorni a Natale: ");
+      Serial.println(days);
+    } else {
+      Serial.println("\n❌ Sincronizzazione NTP fallita");
+    }
+    
+    // Disconnetti WiFi per risparmiare energia
+    WiFi.disconnect();
+    WiFi.mode(WIFI_OFF);
+    Serial.println("📡 WiFi disconnesso");
+  } else {
+    Serial.println("\n❌ Connessione WiFi fallita");
   }
 }
