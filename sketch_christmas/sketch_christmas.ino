@@ -89,8 +89,8 @@ MovingStar movingStars[8]; // 8 stelle mobili per non intralciare
 bool starsInitialized = false;
 
 // Configurazione WiFi per sincronizzazione orario
-const char* ssid = ""; // Inserire il nome della rete WiFi
-const char* password = ""; // Inserire la password WiFi
+const char* ssid = "TuaReteWiFi"; // Inserire il nome della rete WiFi 
+const char* password = "TuaPassword"; // Inserire la password WiFi
 
 // ============== SETUP ==============
 void setup() {
@@ -363,6 +363,16 @@ void updateDisplay() {
   Serial.print(daysToChristmas);
   Serial.println(" giorni a Natale");
   
+  // 🔍 Debug della logica di visualizzazione
+  Serial.print("🔍 Display Logic: ");
+  if (daysToChristmas > 0) {
+    Serial.println("Modalità countdown normale");
+  } else if (daysToChristmas == 0) {
+    Serial.println("Modalità 'OGGI È NATALE!'");
+  } else {
+    Serial.println("Modalità errore (giorni negativi)");
+  }
+  
   // Aggiorna display solo se disponibile
   if(!displayAvailable) {
     Serial.println("⚠️ Display non disponibile - Solo debug seriale");
@@ -377,10 +387,14 @@ void updateDisplay() {
   
   // Visualizzazione giorni rimanenti
   if (daysToChristmas > 0) {
-    // Scritta "mancano solo" in alto
+    // Gestione singolare/plurale per "manca/mancano"
+    String headerText = (daysToChristmas == 1) ? "manca solo" : "mancano solo";
+    String footerText = (daysToChristmas == 1) ? "giorno a Natale" : "giorni a Natale";
+    
+    // Scritta "manca solo" o "mancano solo" in alto
     u8g2.setFont(u8g2_font_9x15_tr);
-    int textWidth = u8g2.getStrWidth("mancano solo");
-    u8g2.drawStr((128 - textWidth) / 2, 15, "mancano solo");
+    int textWidth = u8g2.getStrWidth(headerText.c_str());
+    u8g2.drawStr((128 - textWidth) / 2, 15, headerText.c_str());
     
     // Numero più piccolo al centro (per non toccare "mancano")
     u8g2.setFont(u8g2_font_fub20_tn);
@@ -388,10 +402,10 @@ void updateDisplay() {
     int numberWidth = u8g2.getStrWidth(daysStr.c_str());
     u8g2.drawStr((128 - numberWidth) / 2, 40, daysStr.c_str());
     
-    // Scritta "giorni a Natale" più piccola in basso
+    // Scritta "giorno a Natale" o "giorni a Natale" più piccola in basso
     u8g2.setFont(u8g2_font_6x10_tr);
-    textWidth = u8g2.getStrWidth("giorni a Natale");
-    u8g2.drawStr((128 - textWidth) / 2, 55, "giorni a Natale");
+    textWidth = u8g2.getStrWidth(footerText.c_str());
+    u8g2.drawStr((128 - textWidth) / 2, 55, footerText.c_str());
     
   } else if (daysToChristmas == 0) {
     // È Natale oggi!
@@ -406,14 +420,14 @@ void updateDisplay() {
     u8g2.drawStr(60, 10, "*");
     
   } else {
-    // Natale è passato
+    // Caso di errore (non dovrebbe succedere con la logica attuale)
     u8g2.setFont(u8g2_font_6x10_tr);
-    int textWidth = u8g2.getStrWidth("Natale e' passato!");
-    u8g2.drawStr((128 - textWidth) / 2, 25, "Natale e' passato!");
+    int textWidth = u8g2.getStrWidth("Errore calcolo!");
+    u8g2.drawStr((128 - textWidth) / 2, 25, "Errore calcolo!");
     
-    String nextYear = "Prossimo tra " + String(365 + daysToChristmas) + " giorni";
-    textWidth = u8g2.getStrWidth(nextYear.c_str());
-    u8g2.drawStr((128 - textWidth) / 2, 40, nextYear.c_str());
+    String debugStr = "Giorni: " + String(daysToChristmas);
+    textWidth = u8g2.getStrWidth(debugStr.c_str());
+    u8g2.drawStr((128 - textWidth) / 2, 40, debugStr.c_str());
   }
   
   // Indicatore modalità in basso al centro (solo se modalità pulsante)
@@ -460,17 +474,44 @@ int calculateDaysToChristmas() {
     Serial.println("📅 Usando orario di sistema (RTC non disponibile)");
   }
   
-  // Data di Natale dell'anno corrente
-  DateTime christmas(now.year(), 12, 25);
-  
-  // Se Natale è già passato, calcola per l'anno prossimo
-  if (now > christmas) {
-    christmas = DateTime(now.year() + 1, 12, 25);
+  // Controllo specifico per il 25 dicembre
+  if (now.month() == 12 && now.day() == 25) {
+    Serial.println("🔍 Debug: È il 25 dicembre - OGGI È NATALE!");
+    return 0; // È Natale oggi!
   }
   
-  // Calcolo differenza in giorni
-  TimeSpan diff = christmas - now;
-  return diff.days();
+  // Data di Natale dell'anno corrente (ora 00:00:00)
+  DateTime christmas(now.year(), 12, 25, 0, 0, 0);
+  
+  // Se Natale è già passato (dopo il 25 dicembre), calcola per l'anno prossimo
+  if ((now.month() == 12 && now.day() > 25) || 
+      (now.month() > 12)) {
+    christmas = DateTime(now.year() + 1, 12, 25, 0, 0, 0);
+  }
+  
+  // Calcolo differenza in giorni - usa la data senza considerare l'ora
+  DateTime nowDate(now.year(), now.month(), now.day(), 0, 0, 0);
+  DateTime christmasDate(christmas.year(), christmas.month(), christmas.day(), 0, 0, 0);
+  
+  TimeSpan diff = christmasDate - nowDate;
+  int daysLeft = diff.days();
+  
+  // Debug del calcolo
+  Serial.print("🔍 Debug: Oggi ");
+  Serial.print(now.day());
+  Serial.print("/");
+  Serial.print(now.month());
+  Serial.print(" vs Natale ");
+  Serial.print(christmas.day());
+  Serial.print("/");
+  Serial.print(christmas.month());
+  Serial.print("/");
+  Serial.print(christmas.year());
+  Serial.print(" = ");
+  Serial.print(daysLeft);
+  Serial.println(" giorni");
+  
+  return daysLeft;
 }
 
 // ============== CONFIGURAZIONE WIFI E SINCRONIZZAZIONE ORARIO ==============
@@ -640,6 +681,9 @@ void handleSerialCommand(String command) {
     Serial.println("   CHECK_BATTERY - Verifica stato batteria RTC");
     Serial.println("   SAVE_CONFIG - Salva configurazione in EEPROM");
     Serial.println("   LOAD_CONFIG - Carica configurazione da EEPROM");
+    Serial.println("   SYNC_NTP - Forza sincronizzazione con NTP");
+    Serial.println("   NOW - Mostra orario compilazione e RTC");
+    Serial.println("   TEST - Esegue test con date specifiche");
     Serial.println("   HELP - Mostra questo messaggio");
   }
   // Comando per verificare batteria
@@ -653,6 +697,48 @@ void handleSerialCommand(String command) {
   // Comando per caricare configurazione
   else if (command.equals("LOAD_CONFIG")) {
     loadConfiguration();
+  }
+  // Comando per eseguire test con date specifiche
+  else if (command.equals("TEST")) {
+    Serial.println("🧪 Eseguendo test scenari date...");
+    testDateScenarios();
+  }
+  // Comando per sincronizzare con NTP
+  else if (command.equals("SYNC_NTP")) {
+    Serial.println("🔄 Forzando sincronizzazione NTP...");
+    syncWithNTP();
+  }
+  // Comando per ottenere orario attuale
+  else if (command.equals("NOW")) {
+    Serial.print("⏰ Orario di compilazione: ");
+    DateTime compileTime = getCompileDateTime();
+    Serial.print(compileTime.day());
+    Serial.print("/");
+    Serial.print(compileTime.month());
+    Serial.print("/");
+    Serial.print(compileTime.year());
+    Serial.print(" ");
+    Serial.print(compileTime.hour());
+    Serial.print(":");
+    Serial.print(compileTime.minute());
+    Serial.print(":");
+    Serial.println(compileTime.second());
+    
+    if (rtcAvailable) {
+      DateTime now = rtc.now();
+      Serial.print("⏰ Orario RTC: ");
+      Serial.print(now.day());
+      Serial.print("/");
+      Serial.print(now.month());
+      Serial.print("/");
+      Serial.print(now.year());
+      Serial.print(" ");
+      Serial.print(now.hour());
+      Serial.print(":");
+      Serial.print(now.minute());
+      Serial.print(":");
+      Serial.println(now.second());
+    }
   }
   else {
     Serial.println("❌ Comando non riconosciuto. Scrivi HELP per la lista comandi.");
@@ -1342,5 +1428,165 @@ void setRTCFromCompileTime() {
     Serial.println("✅ RTC impostato correttamente con orario di compilazione");
   } else {
     Serial.println("⚠️ Possibile errore nell'impostazione del RTC");
+  }
+}
+
+// ============== FUNZIONE PER SINCRONIZZAZIONE NTP FORZATA ==============
+void syncWithNTP() {
+  if (!rtcAvailable) {
+    Serial.println("❌ RTC non disponibile per sincronizzazione");
+    return;
+  }
+  
+  // Se le credenziali WiFi sono vuote, chiedi all'utente
+  if (strlen(ssid) == 0 || strcmp(ssid, "TuaReteWiFi") == 0) {
+    Serial.println("⚠️ WiFi non configurato!");
+    Serial.println("💡 Modifica le credenziali WiFi nel codice:");
+    Serial.println("   const char* ssid = \"NomeDellatuaRete\";");
+    Serial.println("   const char* password = \"PasswordDellatuaRete\";");
+    Serial.println("💡 Oppure usa: SET_TIME,2025,7,10,18,5,0");
+    return;
+  }
+  
+  Serial.println("📡 Connessione WiFi per sincronizzazione NTP...");
+  WiFi.begin(ssid, password);
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✅ WiFi connesso! Sincronizzazione con NTP...");
+    
+    // Configura NTP per fuso orario italiano (UTC+1, DST +1)
+    configTime(3600, 3600, "pool.ntp.org", "time.google.com");
+    
+    // Attendi sincronizzazione NTP
+    struct tm timeinfo;
+    int ntpAttempts = 0;
+    while (!getLocalTime(&timeinfo) && ntpAttempts < 15) {
+      delay(1000);
+      ntpAttempts++;
+      Serial.print(".");
+    }
+    
+    if (getLocalTime(&timeinfo)) {
+      // Sincronizza il RTC con l'orario NTP
+      DateTime ntpTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                      timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+      rtc.adjust(ntpTime);
+      Serial.println("\n✅ RTC sincronizzato con NTP!");
+      
+      Serial.print("📅 Nuovo orario RTC: ");
+      DateTime now = rtc.now();
+      Serial.print(now.day());
+      Serial.print("/");
+      Serial.print(now.month());
+      Serial.print("/");
+      Serial.print(now.year());
+      Serial.print(" ");
+      Serial.print(now.hour());
+      Serial.print(":");
+      if (now.minute() < 10) Serial.print("0");
+      Serial.print(now.minute());
+      Serial.print(":");
+      if (now.second() < 10) Serial.print("0");
+      Serial.println(now.second());
+      
+      // Mostra countdown aggiornato
+      int days = calculateDaysToChristmas();
+      Serial.print("🎄 Giorni a Natale: ");
+      Serial.println(days);
+    } else {
+      Serial.println("\n❌ Sincronizzazione NTP fallita");
+    }
+    
+    // Disconnetti WiFi per risparmiare energia
+    WiFi.disconnect();
+    WiFi.mode(WIFI_OFF);
+    Serial.println("📡 WiFi disconnesso");
+  } else {
+    Serial.println("\n❌ Connessione WiFi fallita");
+  }
+}
+
+// ============== FUNZIONI DI TEST DATE ==============
+void testDateScenarios() {
+  Serial.println("🧪 === TEST SCENARI DATE ===");
+  
+  // Test con data 24 dicembre
+  Serial.println("\n📅 TEST: 24 dicembre 2024");
+  DateTime test24Dec(2024, 12, 24, 15, 30, 0);
+  testCountdownWithDate(test24Dec);
+  
+  // Test con data 25 dicembre
+  Serial.println("\n📅 TEST: 25 dicembre 2024");
+  DateTime test25Dec(2024, 12, 25, 10, 0, 0);
+  testCountdownWithDate(test25Dec);
+  
+  // Test con data 26 dicembre
+  Serial.println("\n📅 TEST: 26 dicembre 2024");
+  DateTime test26Dec(2024, 12, 26, 12, 0, 0);
+  testCountdownWithDate(test26Dec);
+  
+  // Test con data gennaio
+  Serial.println("\n📅 TEST: 15 gennaio 2025");
+  DateTime testJan(2025, 1, 15, 8, 0, 0);
+  testCountdownWithDate(testJan);
+  
+  Serial.println("\n🧪 === FINE TEST ===\n");
+}
+
+void testCountdownWithDate(DateTime testDate) {
+  // Salva la data corrente del RTC se disponibile
+  DateTime originalTime;
+  bool hadRTC = rtcAvailable;
+  
+  if (rtcAvailable) {
+    originalTime = rtc.now();
+    // Imposta temporaneamente la data di test
+    rtc.adjust(testDate);
+  }
+  
+  Serial.print("📅 Data test: ");
+  Serial.print(testDate.day());
+  Serial.print("/");
+  Serial.print(testDate.month());
+  Serial.print("/");
+  Serial.print(testDate.year());
+  Serial.print(" ");
+  Serial.print(testDate.hour());
+  Serial.print(":");
+  Serial.print(testDate.minute());
+  Serial.print(":");
+  Serial.println(testDate.second());
+  
+  // Calcola i giorni
+  int days = calculateDaysToChristmas();
+  
+  Serial.print("📊 Risultato: ");
+  Serial.print(days);
+  Serial.print(" giorni - Messaggio: ");
+  
+  if (days > 1) {
+    Serial.print("mancano solo ");
+    Serial.print(days);
+    Serial.println(" giorni a Natale");
+  } else if (days == 1) {
+    Serial.println("manca solo 1 giorno a Natale");
+  } else if (days == 0) {
+    Serial.println("OGGI È NATALE!");
+  } else {
+    Serial.print("Natale è passato, prossimo tra ");
+    Serial.print(365 + days);
+    Serial.println(" giorni");
+  }
+  
+  // Ripristina la data originale se aveva RTC
+  if (hadRTC && rtcAvailable) {
+    rtc.adjust(originalTime);
   }
 }

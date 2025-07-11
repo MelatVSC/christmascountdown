@@ -237,3 +237,57 @@ Preparare per l'integrazione:
 - **Sincronizzazione**: RTC + suono + display
 
 Il sistema base è pronto per l'espansione! 🎄
+
+---
+
+## 🎯 FIX BUG 25 DICEMBRE - NUOVO TEST
+
+### ✅ Test Fix: 25 Dicembre
+
+**Problema risolto:** Il 25 dicembre mostrava "Mancano 365 giorni a Natale" invece di "OGGI È NATALE!"
+
+**Nuovo comando di test disponibile:**
+```
+TEST
+```
+
+**Test manuali specifici:**
+
+#### Test del 25 Dicembre
+```
+SET_TIME,2024,12,25,10,30,0
+```
+**Risultato atteso:** "OGGI È NATALE!" sul display
+
+#### Test del 24 Dicembre  
+```
+SET_TIME,2024,12,24,15,0,0
+```
+**Risultato atteso:** "manca solo 1 giorno a Natale"
+
+#### Test del 26 Dicembre
+```
+SET_TIME,2024,12,26,9,0,0
+```
+**Risultato atteso:** "mancano solo 364 giorni a Natale"
+
+### Debug Output Aggiuntivo
+
+Il codice ora stampa debug dettagliato per verificare la logica:
+
+```
+📅 RTC: 25/12/2024 10:30:00
+🔍 Debug: È il 25 dicembre - OGGI È NATALE!
+📊 Countdown: 0 giorni a Natale
+🔍 Display Logic: Modalità 'OGGI È NATALE!'
+```
+
+### Comandi Seriali Aggiornati
+
+Nuovi comandi disponibili:
+- `TEST` - Esegue test automatici date specifiche
+- `HELP` - Lista completa comandi
+- `NOW` - Mostra compile time e RTC
+- `SYNC_NTP` - Forza sincronizzazione NTP
+
+---
